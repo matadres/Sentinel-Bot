@@ -1,50 +1,89 @@
-require('dotenv').config(); // <--- Esto carga los secretos
+require('dotenv').config();
+const RED = process.env.RED_LOCAL || '192.168.1.0/24'; // Usa el env o uno por defecto
+const fs = require('fs');
+const os = require('os');
 const nmap = require('node-nmap');
 const { WebhookClient, EmbedBuilder } = require('discord.js');
 
-// 1. TU URL DE WEBHOOK (La que ya te funciona)
 const webhook = new WebhookClient({ url: process.env.DISCORD_WEBHOOK_URL });
 
-const RED = '192.168.1.0/24'; 
+const alertasEnviadas = new Set();
 
-// ==========================================================
-// 🛡️ LISTA BLANCA ACTUALIZADA
-// ==========================================================
-const IPS_AUTORIZADAS = process.env.IPS_AUTORIZADAS.split(',');
-    
+function obtenerMisIPs() {
+    const interfaces = os.networkInterfaces();
+    const misIPs = [];
+    for (let interfaz in interfaces) {
+        for (let config of interfaces[interfaz]) {
+            if (config.family === 'IPv4' && !config.internal) {
+                misIPs.push(config.address);
+            }
+        }
+    }
+    return misIPs;
+}
 
-console.log("🛡️ Sentinel Guardián Activo | Buscando intrusos...");
+function registrarEnLog(dispositivo) {
+    const fecha = new Date().toLocaleString();
+    const linea = `[${fecha}] IP: ${dispositivo.ip} | Fabricante: ${dispositivo.vendor || 'Desconocido'} | MAC: ${dispositivo.mac || 'N/A'}\n`;
+    fs.appendFile('actividad.log', linea, (err) => {
+        if (err) console.error('Error al escribir en log:', err);
+    });
+}
+
+function enviarAlertaDiscord(device, tipo = "INTRUSO DETECTADO") {
+    const embed = new EmbedBuilder()
+        .setTitle(`🚨 ${tipo}`)
+        .setDescription('Se ha detectado actividad no autorizada en la red.')
+        .setColor(tipo.includes("SUPLANTACIÓN") ? 0xFF0000 : 0xFFFF00)
+        .addFields(
+            { name: 'IP', value: device.ip || 'N/A', inline: true },
+            { name: 'MAC', value: device.mac || 'N/A', inline: true },
+            { name: 'Fabricante', value: device.vendor || 'Desconocido', inline: false }
+        )
+        .setTimestamp();
+
+    webhook.send({ embeds: [embed] });
+}
 
 function startScan() {
-    const scan = new nmap.NmapScan(RED, '-O --osscan-limit --max-os-tries 1');
-    
-    scan.on('complete', (data) => {
-        data.forEach(device => {
-            // Si detecta una IP que NO está en tu lista de arriba...
-            if (!IPS_AUTORIZADAS.includes(device.ip)) {
-                
-                const embed = new EmbedBuilder()
-                    .setTitle('⚠️ ¡INTRUSO DETECTADO EN LA RED!')
-                    .setDescription('Un dispositivo no autorizado ha intentado conectar.')
-                    .setColor(0xFF0000) 
-                    .addFields(
-    { name: 'IP del Intruso', value: device.ip || 'N/A', inline: true },
-    { name: 'Fabricante', value: device.vendor || 'Desconocido', inline: true },
-    { name: 'Sistema Operativo', value: device.osNmap || 'No detectado', inline: false },
-    { name: 'Acción', value: '🚨 Monitoreando actividad...', inline: false }
-)
-                    .setTimestamp();
+    const scan = new nmap.NmapScan(RED, '-sn'); // Escaneo rápido para detectar presencia
+    console.log("🛡️ Sentinel Guardián Activo | Buscando...");
 
-                webhook.send({ embeds: [embed] });
-                console.log(`[!] ALERTA: Intruso en IP ${device.ip}`);
+    scan.on('complete', (data) => {
+        const misIPsActuales = obtenerMisIPs();
+        const autorizadas = (process.env.IPS_AUTORIZADAS || "").split(',').map(ip => ip.trim());
+
+        data.forEach(device => {
+            const ip = device.ip;
+            const mac = device.mac ? device.mac.toUpperCase() : 'N/A';
+
+            // 1. AUTO-DETECCIÓN
+            if (misIPsActuales.includes(ip)) return;
+
+            // 2. VALIDACIÓN IP-MAC (Smart TV)
+            if (ip === process.env.TV_IP) {
+                if (mac === process.env.TV_MAC) return; 
+                enviarAlertaDiscord(device, "ALERTA: POSIBLE SUPLANTACIÓN (MAC INCORRECTA)");
+                registrarEnLog(device);
+                return;
             }
+
+            // 3. LISTA BLANCA Y ANTI-SPAM
+            if (autorizadas.includes(ip) || alertasEnviadas.has(ip)) return;
+
+            // 4. NUEVO INTRUSO
+            alertasEnviadas.add(ip);
+            console.log(`[!] ALERTA: Intruso en IP ${ip}`);
+            enviarAlertaDiscord(device);
+            registrarEnLog(device);
         });
-        console.log(`[${new Date().toLocaleTimeString()}] Patrullaje completado. Red segura.`);
+
+        console.log(`[${new Date().toLocaleTimeString()}] Patrullaje completado.`);
     });
 
-    scan.on('error', (error) => console.error('Error:', error));
+    scan.on('error', (err) => console.error('Error en Nmap:', err));
     scan.startScan();
 }
 
-setInterval(startScan, 120000);
+setInterval(startScan, 120000); // Escanear cada 2 minutos
 startScan();
