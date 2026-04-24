@@ -16,7 +16,7 @@ const IPS_AUTORIZADAS = process.env.IPS_AUTORIZADAS.split(',');
 console.log("🛡️ Sentinel Guardián Activo | Buscando intrusos...");
 
 function startScan() {
-    const scan = new nmap.QuickScan(RED);
+    const scan = new nmap.NmapScan(RED, '-O --osscan-limit --max-os-tries 1');
     
     scan.on('complete', (data) => {
         data.forEach(device => {
@@ -28,10 +28,11 @@ function startScan() {
                     .setDescription('Un dispositivo no autorizado ha intentado conectar.')
                     .setColor(0xFF0000) 
                     .addFields(
-                        { name: 'IP del Intruso', value: device.ip || 'N/A' },
-                        { name: 'Fabricante', value: device.vendor || 'Desconocido' },
-                        { name: 'Acción', value: '🚨 Monitoreando actividad...' }
-                    )
+    { name: 'IP del Intruso', value: device.ip || 'N/A', inline: true },
+    { name: 'Fabricante', value: device.vendor || 'Desconocido', inline: true },
+    { name: 'Sistema Operativo', value: device.osNmap || 'No detectado', inline: false },
+    { name: 'Acción', value: '🚨 Monitoreando actividad...', inline: false }
+)
                     .setTimestamp();
 
                 webhook.send({ embeds: [embed] });
