@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Sentinel-Bot | Dashboard</title>
+    <style>
+        body { background: #0d1117; color: white; font-family: sans-serif; margin: 0; padding: 20px; }
+        .navbar { border-bottom: 2px solid #238636; padding-bottom: 10px; margin-bottom: 20px; }
+        .alerta-item { 
+            background: #161b22; 
+            border-left: 5px solid #f85149; 
+            padding: 15px; 
+            margin-bottom: 10px; 
+            border-radius: 4px; 
+        }
+        .meta { color: #58a6ff; font-family: monospace; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <h1>🛡️ SENTINEL-BOT <small style="font-size: 0.4em;">v1.0</small></h1>
+    </div>
+
+    <div id="lista-logs">
+        <div style="text-align:center; color:#8b949e; margin-top:50px;">
+            Esperando datos del bot... (Ejecuta node index.js)
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const listaLogs = document.getElementById('lista-logs');
+
+        socket.on('alerta-seguridad', (data) => {
+            // Limpiar mensaje inicial
+            if (listaLogs.innerText.includes("Esperando")) listaLogs.innerHTML = '';
+            
+            const div = document.createElement('div');
+            div.className = 'alerta-item';
+            
+            // Lógica de colores
+            const color = data.tipo === 'SEGURO' ? '#238636' : '#f85149';
+            div.style.borderLeftColor = color;
+
+            div.innerHTML = `
+                <div style="float:right; font-size:0.8em; color:#8b949e">${data.timestamp}</div>
+                <b style="color:${color}">[${data.tipo}]</b> ${data.mensaje}
+                <div class="meta">IP: ${data.ip} | MAC: ${data.mac}</div>
+            `;
+            listaLogs.prepend(div);
+        });
+    </script>

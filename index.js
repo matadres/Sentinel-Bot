@@ -2,74 +2,86 @@ require('dotenv').config();
 const { spawn } = require('child_process');
 const nmap = require('node-nmap');
 const { WebhookClient, EmbedBuilder } = require('discord.js');
-const fs = require('fs');
+const axios = require('axios');
 
-// --- INICIALIZACIÓN ---
+// --- CONFIGURACIÓN ---
 const webhook = new WebhookClient({ url: process.env.DISCORD_WEBHOOK_URL });
 const alertasEnviadas = new Set();
+const DASHBOARD_URL = 'http://localhost:3000/enviar-alerta';
 
-// --- FUNCIÓN DE RESPUESTA ACTIVA (EXPULSIÓN) ---
-function activarExpulsion(ipIntruso) {
+// --- COMUNICACIÓN CON DASHBOARD ---
+async function reportarAlDashboard(tipo, msg, ip, mac) {
+    try {
+        await axios.get(DASHBOARD_URL, {
+            params: { tipo, msg, ip, mac }
+        });
+    } catch (error) {
+        // El bot continúa si el dashboard está offline
+    }
+}
+
+// --- RESPUESTA ACTIVA (EXPULSIÓN) ---
+function activarExpulsion(ipIntruso, macIntruso) {
     const gateway = process.env.GATEWAY_IP || '192.168.1.1';
-    console.log(`[🔥] SENTINEL: Iniciando contramedida ARP contra ${ipIntruso}`);
+    console.log(`[🔥] SENTINEL: Iniciando contramedida contra ${ipIntruso}`);
 
-    // Ejecuta el script de Python que creamos anteriormente
+    reportarAlDashboard('BLOQUEO', 'Protocolo de expulsión ARP iniciado', ipIntruso, macIntruso);
+
+    // Ejecución del script de Python (Asegúrate de que kick.py esté en el repo)
     const ataque = spawn('python', ['kick.py', ipIntruso, gateway]);
 
-    ataque.stdout.on('data', (data) => console.log(`[KICK-LOG]: ${data}`));
-    ataque.stderr.on('data', (data) => console.error(`[KICK-ERR]: ${data}`));
-
-    // Mantenemos el bloqueo por 2 minutos para neutralizar al intruso
     setTimeout(() => {
         ataque.kill();
         console.log(`[🛡️] SENTINEL: Bloqueo finalizado para ${ipIntruso}.`);
+        reportarAlDashboard('INFO', 'Bloqueo finalizado (Tiempo cumplido)', ipIntruso, macIntruso);
     }, 120000);
 }
 
-// --- FUNCIÓN DE ALERTAS ---
-function enviarAlertaDiscord(device, tipo = "INTRUSO DETECTADO Y EXPULSADO") {
-    const embed = new EmbedBuilder()
-        .setTitle(`🚨 ${tipo}`)
-        .setDescription('Se ha detectado un dispositivo no autorizado. El bot ha iniciado el protocolo de expulsión automática.')
-        .setColor(0xFF0000) // Rojo para indicar acción defensiva
-        .addFields(
-            { name: 'IP', value: device.ip || 'N/A', inline: true },
-            { name: 'MAC', value: device.mac || 'N/A', inline: true },
-            { name: 'Fabricante', value: device.vendor || 'Desconocido', inline: false },
-            { name: 'Estado', value: '⚡ Contramedida ARP Activa', inline: false }
-        )
-        .setTimestamp();
-
-    webhook.send({ embeds: [embed] }).catch(err => console.error("Error Discord:", err));
-}
-
-// --- LÓGICA DE ESCANEO ---
+// --- MOTOR DE VIGILANCIA ---
 function startScan() {
     const red = process.env.RED_LOCAL || '192.168.1.0/24';
+    // Usamos -sn para escaneo rápido de red
     const scan = new nmap.NmapScan(red, '-sn'); 
     
     console.log("🛡️ Sentinel Guardián Activo | Patrullando red...");
 
     scan.on('complete', (data) => {
-        const autorizadas = (process.env.IPS_AUTORIZADAS || "").split(',').map(ip => ip.trim());
+        // Cargamos listas de autorización desde variables de entorno
+        const autorizadasIP = (process.env.IPS_AUTORIZADAS || "").split(',').map(ip => ip.trim());
+        const autorizadasMAC = (process.env.MACS_AUTORIZADAS || "").toUpperCase().split(',').map(mac => mac.trim());
 
         data.forEach(device => {
             const ip = device.ip;
             const mac = device.mac ? device.mac.toUpperCase() : 'N/A';
 
-            // 1. Ignorar dispositivos en lista blanca
-            if (autorizadas.includes(ip) || ip === process.env.TV_IP) return;
+            // Verificación cruzada (IP o MAC)
+            const esSeguro = autorizadasIP.includes(ip) || autorizadasMAC.includes(mac);
 
-            // 2. Si no está autorizado y no hemos enviado alerta recientemente
-            if (!alertasEnviadas.has(ip)) {
-                alertasEnviadas.add(ip);
-                console.log(`[!] ALERTA: Intruso detectado en ${ip}. Ejecutando kick.py...`);
+            if (esSeguro) {
+                reportarAlDashboard('SEGURO', 'Dispositivo autorizado detectado', ip, mac);
+                return;
+            }
+
+            // Gestión de Intrusos
+            if (!alertasEnviadas.has(mac !== 'N/A' ? mac : ip)) {
+                alertasEnviadas.add(mac !== 'N/A' ? mac : ip);
+                console.log(`[!] ALERTA: Intruso detectado en ${ip} [${mac}]`);
                 
-                activarExpulsion(ip);
-                enviarAlertaDiscord(device);
+                reportarAlDashboard('DETECCION', '¡Intruso no autorizado!', ip, mac);
+                activarExpulsion(ip, mac);
+                
+                // Alerta a Discord
+                const embed = new EmbedBuilder()
+                    .setTitle(`🚨 INTRUSO DETECTADO`)
+                    .setColor(0xFF0000)
+                    .addFields(
+                        { name: 'IP', value: ip, inline: true },
+                        { name: 'MAC', value: mac, inline: true }
+                    )
+                    .setTimestamp();
+                webhook.send({ embeds: [embed] }).catch(() => {});
             }
         });
-
         console.log(`[${new Date().toLocaleTimeString()}] Patrullaje completado.`);
     });
 
@@ -77,6 +89,5 @@ function startScan() {
     scan.startScan();
 }
 
-// Escaneo automático cada 60 segundos
-setInterval(startScan, 60000);
+setInterval(startScan, 60000); // Patrullaje cada minuto
 startScan();
