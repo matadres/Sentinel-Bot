@@ -1,3 +1,4 @@
 node_modules/
 .env
 actividad.log
+__pycache__/
